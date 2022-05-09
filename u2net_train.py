@@ -2,19 +2,12 @@ import glob
 import os
 import logging
 import numpy as np
-from numpy import place
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
-import torchvision
-import torchvision.transforms as standard_transforms
-from torch.autograd import Variable
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms, utils
+from torch.utils.data import DataLoader
+from torchvision import transforms
 
-from data_loader import (RandomCrop, Rescale, RescaleT, SalObjDataset,
-                         ToTensor, ToTensorLab)
+from data_loader import RandomCrop, RescaleT, SalObjDataset, ToTensorLab
 from model import U2NET, U2NETP
 from utils import dice, set_n_get_device, save_checkpoint, set_logger
 from loss import muti_bce_loss_fusion
@@ -38,7 +31,7 @@ model_dir = os.path.join(os.getcwd(), 'saved_models', model_name + os.sep)
 pre_model_dir = r'F:\Segmentation\SemiSeg_CPS_Torch_Darren\pretrained_model\u2net.pth'
 device = set_n_get_device("0", data_device_id="cuda:0")  # use the first GPU
 
-# ------- 2. set the directory of training dataset --------
+# 2. set the directory of training dataset
 data_dir = os.path.join(os.getcwd(), 'datasets' + os.sep)
 train_image_dir = os.path.join('imgs', 'train' + os.sep)
 train_label_dir = os.path.join('labels', 'train' + os.sep)
