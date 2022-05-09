@@ -7,3 +7,8 @@ opencv-python
 paddlepaddle
 paddlehub
 gradio
+torch>=1.1
+torchvision
+numpy
+tqdm
+tensorboard>=1.14
