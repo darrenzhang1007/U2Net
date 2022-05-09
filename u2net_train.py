@@ -1,150 +1,129 @@
-import os
-import torch
-import torchvision
-from torch.autograd import Variable
-import torch.nn as nn
-import torch.nn.functional as F
-
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
-import torch.optim as optim
-import torchvision.transforms as standard_transforms
-
-import numpy as np
 import glob
 import os
+import logging
+import numpy as np
+from numpy import place
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as standard_transforms
+from torch.autograd import Variable
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms, utils
 
-from data_loader import Rescale
-from data_loader import RescaleT
-from data_loader import RandomCrop
-from data_loader import ToTensor
-from data_loader import ToTensorLab
-from data_loader import SalObjDataset
+from data_loader import (RandomCrop, Rescale, RescaleT, SalObjDataset,
+                         ToTensor, ToTensorLab)
+from model import U2NET, U2NETP
+from utils import dice, set_n_get_device, save_checkpoint, set_logger
+from loss import muti_bce_loss_fusion
 
-from model import U2NET
-from model import U2NETP
 
-# ------- 1. define loss function --------
-
-bce_loss = nn.BCELoss(size_average=True)
-
-def muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v):
-
-	loss0 = bce_loss(d0,labels_v)
-	loss1 = bce_loss(d1,labels_v)
-	loss2 = bce_loss(d2,labels_v)
-	loss3 = bce_loss(d3,labels_v)
-	loss4 = bce_loss(d4,labels_v)
-	loss5 = bce_loss(d5,labels_v)
-	loss6 = bce_loss(d6,labels_v)
-
-	loss = loss0 + loss1 + loss2 + loss3 + loss4 + loss5 + loss6
-	print("l0: %3f, l1: %3f, l2: %3f, l3: %3f, l4: %3f, l5: %3f, l6: %3f\n"%(loss0.data.item(),loss1.data.item(),loss2.data.item(),loss3.data.item(),loss4.data.item(),loss5.data.item(),loss6.data.item()))
-
-	return loss0, loss
-
+# 1. 设置超参数
+image_ext = '.png'
+label_ext = '.png'
+ite_num = 0
+running_loss = 0.0
+running_tar_loss = 0.0
+ite_num4val = 0
+save_frq = 2000  # save the model every 2000 iterations
+early_stopping_round = 50
+epoch_num = 100
+model_name = 'u2net'  # 'u2netp'
+batch_size_val = 1
+batch_size_train = 12
+model_dir = os.path.join(os.getcwd(), 'saved_models', model_name + os.sep)
+# pre_model_dir = os.path.join(os.getcwd(), 'saved_models', model_name, 'u2net_bce_itr_54400_train_0.053013_tar_0.005284.pth')
+pre_model_dir = r'F:\Segmentation\SemiSeg_CPS_Torch_Darren\pretrained_model\u2net.pth'
+device = set_n_get_device("0", data_device_id="cuda:0")  # use the first GPU
 
 # ------- 2. set the directory of training dataset --------
+data_dir = os.path.join(os.getcwd(), 'datasets' + os.sep)
+train_image_dir = os.path.join('imgs', 'train' + os.sep)
+train_label_dir = os.path.join('labels', 'train' + os.sep)
+val_image_dir = os.path.join('imgs', 'val' + os.sep)
+val_label_dir = os.path.join('labels', 'val' + os.sep)
 
-model_name = 'u2net' #'u2netp'
+train_img_name_list = glob.glob(data_dir + train_image_dir + '*' + image_ext)
+train_label_name_list = glob.glob(data_dir + train_label_dir + '*' + image_ext)
+val_img_name_list = glob.glob(data_dir + val_image_dir + '*' + image_ext)
+val_label_name_list = glob.glob(data_dir + val_label_dir + '*' + image_ext)
 
-data_dir = os.path.join(os.getcwd(), 'train_data' + os.sep)
-tra_image_dir = os.path.join('DUTS', 'DUTS-TR', 'DUTS-TR', 'im_aug' + os.sep)
-tra_label_dir = os.path.join('DUTS', 'DUTS-TR', 'DUTS-TR', 'gt_aug' + os.sep)
-
-image_ext = '.jpg'
-label_ext = '.png'
-
-model_dir = os.path.join(os.getcwd(), 'saved_models', model_name + os.sep)
-
-epoch_num = 100000
-batch_size_train = 12
-batch_size_val = 1
-train_num = 0
-val_num = 0
-
-tra_img_name_list = glob.glob(data_dir + tra_image_dir + '*' + image_ext)
-
-tra_lbl_name_list = []
-for img_path in tra_img_name_list:
-	img_name = img_path.split(os.sep)[-1]
-
-	aaa = img_name.split(".")
-	bbb = aaa[0:-1]
-	imidx = bbb[0]
-	for i in range(1,len(bbb)):
-		imidx = imidx + "." + bbb[i]
-
-	tra_lbl_name_list.append(data_dir + tra_label_dir + imidx + label_ext)
+assert len(train_img_name_list) == len(train_label_name_list), "please check your number of training data imgs and labels"
+assert len(val_img_name_list) == len(val_label_name_list), "please check your number of training data imgs and labels"
 
 print("---")
-print("train images: ", len(tra_img_name_list))
-print("train labels: ", len(tra_lbl_name_list))
+print("train images: ", len(train_img_name_list))
+print("train labels: ", len(train_label_name_list))
 print("---")
 
-train_num = len(tra_img_name_list)
+train_num = len(train_img_name_list)
+val_num = len(val_img_name_list)
 
-salobj_dataset = SalObjDataset(
-    img_name_list=tra_img_name_list,
-    lbl_name_list=tra_lbl_name_list,
+train_dataset = SalObjDataset(
+    img_name_list=train_img_name_list,
+    lbl_name_list=train_label_name_list,
     transform=transforms.Compose([
-        RescaleT(320),
-        RandomCrop(288),
+        RescaleT(640),
+        RandomCrop(512),
         ToTensorLab(flag=0)]))
-salobj_dataloader = DataLoader(salobj_dataset, batch_size=batch_size_train, shuffle=True, num_workers=1)
+
+val_dataset = SalObjDataset(
+    img_name_list=val_img_name_list,
+    lbl_name_list=val_label_name_list,
+    transform=transforms.Compose([ToTensorLab(flag=0)]))
+
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, num_workers=0)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False, num_workers=0)
 
 # ------- 3. define model --------
 # define the net
-if(model_name=='u2net'):
+if(model_name == 'u2net'):
     net = U2NET(3, 1)
-elif(model_name=='u2netp'):
-    net = U2NETP(3,1)
+elif(model_name == 'u2netp'):
+    net = U2NETP(3, 1)
 
 if torch.cuda.is_available():
+    net.load_state_dict(torch.load(pre_model_dir))
     net.cuda()
 
 # ------- 4. define optimizer --------
 print("---define optimizer...")
 optimizer = optim.Adam(net.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max',
+                                                       factor=0.5, patience=4,
+                                                       verbose=False, threshold=0.0001,
+                                                       threshold_mode='rel', cooldown=0,
+                                                       min_lr=0, eps=1e-08)
+
 
 # ------- 5. training process --------
-print("---start training...")
-ite_num = 0
-running_loss = 0.0
-running_tar_loss = 0.0
-ite_num4val = 0
-save_frq = 2000 # save the model every 2000 iterations
-
+print("---start training")
+best_val_metric = -0.1
+optimizer.zero_grad()
 for epoch in range(0, epoch_num):
     net.train()
+    train_loss_list, train_metric_list = [], []
+    for i, data in enumerate(train_dataloader):
+        train_img, train_label = data['image'], data['label']
 
-    for i, data in enumerate(salobj_dataloader):
-        ite_num = ite_num + 1
-        ite_num4val = ite_num4val + 1
-
-        inputs, labels = data['image'], data['label']
-
-        inputs = inputs.type(torch.FloatTensor)
-        labels = labels.type(torch.FloatTensor)
-
-        # wrap them in Variable
-        if torch.cuda.is_available():
-            inputs_v, labels_v = Variable(inputs.cuda(), requires_grad=False), Variable(labels.cuda(),
-                                                                                        requires_grad=False)
-        else:
-            inputs_v, labels_v = Variable(inputs, requires_grad=False), Variable(labels, requires_grad=False)
-
-        # y zero the parameter gradients
-        optimizer.zero_grad()
+        img = train_img.to(device=device, dtype=torch.float)
+        label = train_label.to(device=device, dtype=torch.float)
 
         # forward + backward + optimize
-        d0, d1, d2, d3, d4, d5, d6 = net(inputs_v)
-        loss2, loss = muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v)
+        d0, d1, d2, d3, d4, d5, d6 = net(img)
+        loss2, loss = muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, label)
+        train_dice = dice(d0, label)
+
+        train_loss_list.append(loss)
+        train_metric_list.append(train_dice)
 
         loss.backward()
         optimizer.step()
+        optimizer.zero_grad()
 
-        # # print statistics
+        # print statistics
         running_loss += loss.data.item()
         running_tar_loss += loss2.data.item()
 
@@ -152,13 +131,56 @@ for epoch in range(0, epoch_num):
         del d0, d1, d2, d3, d4, d5, d6, loss2, loss
 
         print("[epoch: %3d/%3d, batch: %5d/%5d, ite: %d] train loss: %3f, tar: %3f " % (
-        epoch + 1, epoch_num, (i + 1) * batch_size_train, train_num, ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
+            epoch + 1, epoch_num, (i + 1) * batch_size_train, train_num, ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
 
-        if ite_num % save_frq == 0:
+    train_loss = np.mean(train_loss_list)
+    train_metric = np.mean(train_metric_list)
 
-            torch.save(net.state_dict(), model_dir + model_name+"_bce_itr_%d_train_%3f_tar_%3f.pth" % (ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
-            running_loss = 0.0
-            running_tar_loss = 0.0
-            net.train()  # resume train
-            ite_num4val = 0
+    net.eval()
+    with torch.no_grad():
+        val_loss_list, val_metric_list = [], []
+        for i, data in enumerate(val_dataloader):
+            val_img, val_label = data['image'], data['label']
+            img = val_img.to(device=device, dtype=torch.float)
+            label = val_label.to(device=device, dtype=torch.float)
 
+            d0, d1, d2, d3, d4, d5, d6 = net(img)
+            loss2, loss = muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, label)
+            val_dice = dice(d0, label)
+            val_loss_list.append(loss)
+            val_metric_list.append(val_dice)
+    val_loss = np.mean(val_loss_list)
+    val_metric = np.mean(val_metric_list)
+
+    # Adjust learning_rate
+    scheduler.step(val_metric)
+
+    # force to at least train N epochs
+    if epoch >= -1:
+        if val_metric > best_val_metric:
+            best_val_metric = val_metric
+            is_best = True
+            diff = 0
+        else:
+            is_best = False
+            diff += 1
+            if diff > early_stopping_round:
+                logging.info('Early Stopping: val_metric does not increase %d rounds' % early_stopping_round)
+                break
+    else:
+        is_best = False
+
+    # save checkpoint
+    checkpoint_dict = \
+        {
+            'epoch': epoch,
+            'state_dict': net.state_dict(),
+            'optim_dict': optimizer.state_dict(),
+            'metrics': {'train_loss': train_loss, 'val_loss': val_loss,
+                        'train_metric': train_metric, 'val_metric': val_metric}
+        }
+    save_checkpoint(checkpoint_dict, is_best=is_best, checkpoint=model_dir)
+
+    if epoch > -1:
+        logging.info('[EPOCH %05d]train_loss, train_metric: %0.5f, %0.5f; val_loss, val_metric: %0.5f, %0.5f; time elapsed: %0.1f min' %
+                        (epoch, train_loss.item(), train_metric.item(), val_loss.item(), val_metric.item(), (time.time()-t0)/60))
