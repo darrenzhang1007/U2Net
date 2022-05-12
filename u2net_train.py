@@ -45,7 +45,7 @@ def run_training(train_dl, val_dl):
     # ------- 5. training process --------
     logging.info('start training')
     diff = 0  # 记录模型持续优化的epoch数
-    best_val_metric = -0.1
+    best_val_loss = 1000
     optimizer.zero_grad()
     for epoch in range(0, NUM_EPOCHS):
         t0 = time.time()
@@ -60,10 +60,10 @@ def run_training(train_dl, val_dl):
             # forward + backward + optimize
             d0, d1, d2, d3, d4, d5, d6 = net(img)
             loss2, loss = muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, label)
-            train_dice = dice(d0, label)
+            # train_dice = dice(d0, label)
 
             train_loss_list.append(loss.item())
-            train_metric_list.append(train_dice)
+            # train_metric_list.append(train_dice)
 
             #grandient accumulation step=2
             acc_step = GRADIENTACCSTEP
@@ -89,19 +89,19 @@ def run_training(train_dl, val_dl):
 
                 d0, d1, d2, d3, d4, d5, d6 = net(img)
                 loss2, loss = muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, label)
-                val_dice = dice(d0, label)
+                # val_dice = dice(d0, label)
                 val_loss_list.append(loss.item())
-                val_metric_list.append(val_dice)
+                # val_metric_list.append(val_dice)
         val_loss = np.mean(val_loss_list)
         val_metric = np.mean(val_metric_list)
 
         # Adjust learning_rate
-        scheduler.step(val_metric)
+        scheduler.step(val_loss)
 
         # force to at least train N epochs
         if epoch >= -1:
-            if val_metric > best_val_metric:
-                best_val_metric = val_metric
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
                 is_best = True
                 diff = 0
             else:
@@ -141,7 +141,7 @@ if __name__ == '__main__':
 
     IMAGE_EXT = '.png'
     LABEL_EXT = '.png'
-    MODEL_NAME = 'u2net'  # 'u2netp'
+    MODEL_NAME = 'u2netp'  # 'u2netp'
     BATCH_SIZE_VAL = 1
     BATCH_SIZE_TRAIN = 16
     EARLY_STOPPING_ROUND = 50
@@ -149,7 +149,7 @@ if __name__ == '__main__':
     CREATE_TIME = time.strftime('%Y-%m-%d_%H-%M-%S',time.localtime(time.time()))  # 时间戳
     MODEL_DIR = os.path.join(os.getcwd(), 'saved_models', MODEL_NAME, CREATE_TIME)
     LOG_PATH = os.path.join(MODEL_DIR, '%s_%s.log' %(MODEL_NAME, IMG_SIZE))
-    PRE_MODEL_DIR = r'F:\Segmentation\SemiSeg_CPS_Torch_Darren\pretrained_model\u2net.pth'
+    PRE_MODEL_DIR = r'F:\Segmentation\SemiSeg_CPS_Torch_Darren\pretrained_model\u2netp.pth'
     
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR, exist_ok=True)
